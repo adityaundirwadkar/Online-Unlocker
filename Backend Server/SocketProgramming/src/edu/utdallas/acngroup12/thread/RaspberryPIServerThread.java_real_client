@@ -1,0 +1,170 @@
+package edu.utdallas.acngroup12.thread;
+
+import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.SocketChannel;
+
+import com.pi4j.io.gpio.GpioController;
+import com.pi4j.io.gpio.GpioFactory;
+import com.pi4j.io.gpio.GpioPinDigitalOutput;
+import com.pi4j.io.gpio.PinState;
+import com.pi4j.io.gpio.RaspiPin;
+import edu.utdallas.acngroup12.datastructure.Message;
+
+public class RaspberryPIServerThread extends Thread {
+
+
+        public static GpioController gpio;
+
+    public static GpioPinDigitalOutput pin;
+        private int port;
+        private int MAX_BUF_SIZE=1000;
+        private Message message;
+        private String hostServer;
+        private SocketChannel clientChannel;
+        private ByteBuffer byteBuffer;
+        private String lockID;
+        private String identity;
+
+        public RaspberryPIServerThread(String hostServer, int port, String lockID,double longitude, double latitude) {
+                gpio = GpioFactory.getInstance();
+
+        pin = gpio.provisionDigitalOutputPin(RaspiPin.GPIO_02, "MyLock", PinState.LOW);
+        pin.high();
+                // TODO Auto-generated constructor stub
+                this.hostServer = hostServer;
+                this.port = port;
+                this.clientChannel = null;
+                this.byteBuffer = ByteBuffer.allocate(MAX_BUF_SIZE);
+                this.lockID = lockID;
+                this.identity = "RaspberryPI";
+                this.message = new Message(this.lockID, 0, this.identity, null, null);
+                this.message.setLongitude(longitude);
+                this.message.setLatitude(latitude);
+        }
+
+
+         public static int changeLockStatus(String status) throws InterruptedException {
+
+        // create gpio controller
+
+
+                System.out.println("GPIO_02 initialized to 'off'");
+
+
+                if(status.equalsIgnoreCase("locked")) {
+                        Thread.sleep(5000);
+                        pin.high();
+                        System.out.println("GPIO_02 should be 'on'");
+                        return 1;
+                }else if(status.equalsIgnoreCase("unlocked")){
+                        Thread.sleep(5000);
+                        pin.low();
+                System.out.println("GPIO_02 should be 'off'");
+                return 0;
+                }
+
+        gpio.shutdown();
+        return -1;
+    }
+
+        public void startCommunicating() throws InterruptedException{
+                while(true){
+                                try {
+                                        //initial message to web server
+                                        this.message.setRequestID(0);
+                                        this.message.setSender(this.identity);
+                                        this.message.setSoftLockStatus(null);
+                                        this.message.setHardLockStatus("LOCKED");
+                                        System.out.println("reached before open connection");
+                                        this.clientChannel = SocketChannel.open();
+                                        System.out.println("reached after open connection");
+                                        this.clientChannel.connect(new InetSocketAddress(hostServer, port));
+                                        this.clientChannel.socket().setSoTimeout(15);
+
+                                        //Server is up and running..!
+                                        System.out.println("Connected to Server : " +this.clientChannel.getRemoteAddress());
+                                        System.out.println("Sending Initial Request \n" +this.message.toString());
+                                        byteBuffer.clear();
+                                        byteBuffer.put(Message.serialize(this.message));
+                                        byteBuffer.flip();
+                                        //Write the data to channel
+                                        while(byteBuffer.hasRemaining()) {
+                                                this.clientChannel.write(byteBuffer);
+                                        }
+                                        while(true){
+                                                this.clientChannel.configureBlocking(true);
+                                                byteBuffer = ByteBuffer.allocate(MAX_BUF_SIZE);
+                                                byteBuffer.rewind();
+                                                byteBuffer.clear();
+                                                this.clientChannel.read(byteBuffer);
+                                                Message recievedMessage = null;
+                                                try {
+                                                        recievedMessage = (Message)Message.deserialize(byteBuffer);
+                                                } catch (ClassNotFoundException e) {
+                                                        // TODO Auto-generated catch block
+                                                        e.printStackTrace();
+                                                }
+                                                System.out.println("Recieved connection from : " +recievedMessage.getSender());
+                                                //System.out.println("LockID : " +recievedMessage.getLockID()+ " Current Lock Status : " +recievedMessage.getSoftLockStatus());
+                                                System.out.println(recievedMessage.toString());
+                                                byteBuffer = ByteBuffer.allocate(MAX_BUF_SIZE);
+                                                byteBuffer.rewind();
+                                                byteBuffer.clear();
+                                                if(recievedMessage.getRequestID() > 0){
+                                                        recievedMessage.setSender("RaspberryPI");
+                                                        changeLockStatus(recievedMessage.getSoftLockStatus());
+                                                        recievedMessage.setHardLockStatus(recievedMessage.getSoftLockStatus());
+                                                        System.out.println("Sending Response \n" +recievedMessage.toString());
+                                                        this.byteBuffer.put(Message.serialize(recievedMessage));
+                                                        this.byteBuffer.flip();
+                                                        while(byteBuffer.hasRemaining()) {
+                                                                this.clientChannel.write(byteBuffer);
+                                                        }
+                                                }
+                                        }
+                                } catch (IOException ioe) {
+                                        // TODO Auto-generated catch block
+                                        //ioe.printStackTrace();
+                                        //If this exception occurs then server is down try after 5 seconds of sleep
+                                        try {
+                                                System.out.println("Trying to connect to server in 5 seconds..");
+                                                Thread.sleep(5000);
+                                        } catch (InterruptedException ie) {
+                                                // TODO Auto-generated catch block
+                                                ie.printStackTrace();
+                                        }
+                                }
+                }
+        }
+
+        public void run() {
+                System.out.println("Starting client!!");
+                try{
+                this.startCommunicating();}
+                catch (InterruptedException e){
+                        System.out.println("interrupt exception");
+                }
+        }
+
+        public static void main(String[] args) throws InterruptedException{
+                //java SocketPI localhost 1234 LOCK_3 LOCKED
+                Thread piClient = new RaspberryPIServerThread("acngroup12.utdallas.edu", 2100, "LOCK_2",-96.837209,32.817840);
+                //Thread piClient = new RaspberryPIServerThread("192.168.1.173", 2100, "LOCK_2",-96.837209,32.817840);
+                piClient.start();
+        }
+}
+
+
+//Compile the client
+/*
+pi@raspberrypi ~/Documents/v2 $ cat compileClient.sh
+cd $HOME/Documents/v2
+javac -classpath .:classes:/opt/pi4j/lib/'*' edu/utdallas/acngroup12/thread/RaspberryPIServerThread.java
+*/
+//Run the PI Client
+/*
+cd /home/pi/Documents/v2/
+sudo java -classpath .:classes:/opt/pi4j/lib/'*' edu.utdallas.acngroup12.thread.RaspberryPIServerThread
+*/
